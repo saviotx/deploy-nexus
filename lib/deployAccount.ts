@@ -5,8 +5,6 @@ import {
   NexusBootstrapAbi,
 } from "@biconomy/abstractjs";
 import {
-  type Account,
-  type Chain,
   createPublicClient,
   createWalletClient,
   encodeAbiParameters,
@@ -16,9 +14,7 @@ import {
   http,
   pad,
   parseAbiParameters,
-  type Transport,
   toHex,
-  type WalletClient,
   zeroAddress,
   zeroHash,
 } from "viem";
@@ -33,36 +29,41 @@ type BootstrapPreValidationHook = {
   data: `0x${string}`;
 };
 
-export const deployAccount = async (ownerAddress: `0x${string}`) => {
-  console.log("Deploying account...");
-  console.log(`Owner address: ${ownerAddress}`);
+type DeploymentRequest = {
+  to: `0x${string}`;
+  data: `0x${string}`;
+  value: bigint;
+};
 
-  const deployerAccount = privateKeyToAccount(
-    "0x0a64c2dbb70fb9059a354312467af1a5a6d4e041b67bcbebc11b1d7492d19142" as `0x${string}`
-  );
+type PreparedDeployment = {
+  publicClient: ReturnType<typeof createPublicClient>;
+  request: DeploymentRequest;
+  initData: `0x${string}`;
+  saltHex: Hex;
+  predictedAccount: `0x${string}`;
+  alreadyDeployed: boolean;
+  callArgs: readonly [`0x${string}`, Hex];
+};
 
-  console.log(deployerAccount);
+const SERVICE_PRIVATE_KEY =
+  "0x0a64c2dbb70fb9059a354312467af1a5a6d4e041b67bcbebc11b1d7492d19142" as const;
 
-  const deployerClient: WalletClient<Transport, Chain, Account> =
-    createWalletClient({
-      account: deployerAccount,
-      chain: SOPHON_VIEM_CHAIN,
-      transport: http(),
-    });
+const serviceAccount = privateKeyToAccount(SERVICE_PRIVATE_KEY);
 
+const prepareDeployment = async (
+  ownerAddress: `0x${string}`
+): Promise<PreparedDeployment> => {
   const publicClient = createPublicClient({
     chain: SOPHON_VIEM_CHAIN,
     transport: http(),
   });
 
   const meeConfig = getMEEVersion(MEEVersion.V2_1_0);
-  const indexInput = "0";
-  const accountIndex = BigInt(indexInput ?? "0");
   const factoryAddress = meeConfig.factoryAddress;
   const bootstrapAddress = meeConfig.bootStrapAddress;
+  const accountIndex = BigInt(0);
   const saltHex = pad(toHex(accountIndex), { size: 32 }) as Hex;
 
-  console.log("Encoding bootstrap payload...");
   const emptyModules: BootstrapConfig[] = [];
   const emptyPrevalidationHooks: BootstrapPreValidationHook[] = [];
   const hookConfig: BootstrapConfig = { module: zeroAddress, data: zeroHash };
@@ -83,7 +84,7 @@ export const deployAccount = async (ownerAddress: `0x${string}`) => {
   const initData = encodeAbiParameters(parseAbiParameters("address, bytes"), [
     bootstrapAddress,
     bootstrapCall,
-  ]);
+  ]) as `0x${string}`;
 
   const predictedAccount = (await publicClient.readContract({
     address: factoryAddress,
@@ -92,13 +93,47 @@ export const deployAccount = async (ownerAddress: `0x${string}`) => {
     args: [initData, saltHex],
   })) as `0x${string}`;
 
-  console.log(`Predicted account: ${predictedAccount}`);
-
   const existingCode = await publicClient.getCode({
     address: predictedAccount,
   });
 
   const alreadyDeployed = existingCode && existingCode !== "0x";
+
+  const encodedFactoryCall = encodeFunctionData({
+    abi: AccountFactoryAbi,
+    functionName: "createAccount",
+    args: [initData, saltHex],
+  }) as `0x${string}`;
+
+  return {
+    publicClient,
+    initData,
+    saltHex,
+    predictedAccount,
+    alreadyDeployed: alreadyDeployed || false,
+    callArgs: [initData, saltHex] as const,
+    request: {
+      to: factoryAddress,
+      data: encodedFactoryCall,
+      value: BigInt(0),
+    },
+  };
+};
+
+export const deployAccount = async (ownerAddress: `0x${string}`) => {
+  console.log("Deploying account...");
+  console.log(`Owner address: ${ownerAddress}`);
+
+  const {
+    publicClient,
+    initData,
+    saltHex,
+    predictedAccount,
+    alreadyDeployed,
+    request,
+  } = await prepareDeployment(ownerAddress);
+
+  console.log(`Predicted account: ${predictedAccount}`);
 
   if (alreadyDeployed) {
     console.log("Account already deployed");
@@ -110,7 +145,7 @@ export const deployAccount = async (ownerAddress: `0x${string}`) => {
   }
 
   const backendBalance = await publicClient.getBalance({
-    address: deployerAccount.address,
+    address: serviceAccount.address,
   });
 
   console.log("Service key balance check");
@@ -121,12 +156,18 @@ export const deployAccount = async (ownerAddress: `0x${string}`) => {
 
   console.log("Sending factory transaction...");
 
+  const deployerClient = createWalletClient({
+    account: serviceAccount,
+    chain: SOPHON_VIEM_CHAIN,
+    transport: http(),
+  });
+
   const txHash = await deployerClient.writeContract({
-    address: factoryAddress,
+    address: request.to,
     abi: AccountFactoryAbi,
     functionName: "createAccount",
     args: [initData, saltHex],
-    value: BigInt(0),
+    value: request.value,
   });
 
   await publicClient.waitForTransactionReceipt({ hash: txHash });
@@ -135,5 +176,19 @@ export const deployAccount = async (ownerAddress: `0x${string}`) => {
     accountAddress: predictedAccount,
     alreadyDeployed,
     transactionHash: txHash,
+  } as const;
+};
+
+export const getDeploymentTransaction = async (ownerAddress: `0x${string}`) => {
+  const { request, predictedAccount, alreadyDeployed, callArgs } =
+    await prepareDeployment(ownerAddress);
+
+  return {
+    accountAddress: predictedAccount,
+    alreadyDeployed,
+    to: request.to,
+    data: request.data,
+    value: request.value,
+    callArgs,
   } as const;
 };

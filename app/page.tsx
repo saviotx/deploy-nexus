@@ -3,17 +3,21 @@
 import { useCallback, useMemo, useState } from 'react';
 import { isAddress } from 'viem';
 
-import { deployAccount } from '@/lib/deployAccount';
+import { deployAccount, getDeploymentTransaction } from '@/lib/deployAccount';
 
 type DeployResult = Awaited<ReturnType<typeof deployAccount>>;
+type PreviewResult = Awaited<ReturnType<typeof getDeploymentTransaction>>;
 
 export default function Home() {
   const [ownerInput, setOwnerInput] = useState('');
   const [isDeploying, setIsDeploying] = useState(false);
   const [result, setResult] = useState<DeployResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [isPreviewing, setIsPreviewing] = useState(false);
 
   const ownerAddress = useMemo(() => ownerInput.trim() as `0x${string}`, [ownerInput]);
+  const isBusy = isDeploying || isPreviewing;
 
   const handleSubmit = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
@@ -21,6 +25,7 @@ export default function Home() {
 
       setErrorMessage(null);
       setResult(null);
+      setPreview(null);
 
       if (!ownerAddress || !isAddress(ownerAddress)) {
         setErrorMessage('Enter a valid 0x-prefixed owner address.');
@@ -41,6 +46,29 @@ export default function Home() {
     },
     [ownerAddress],
   );
+
+  const handlePreview = useCallback(async () => {
+    setErrorMessage(null);
+    setResult(null);
+    setPreview(null);
+
+    if (!ownerAddress || !isAddress(ownerAddress)) {
+      setErrorMessage('Enter a valid 0x-prefixed owner address.');
+      return;
+    }
+
+    try {
+      setIsPreviewing(true);
+      const response = await getDeploymentTransaction(ownerAddress);
+      setPreview(response);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Something went wrong while building the tx.';
+      setErrorMessage(message);
+    } finally {
+      setIsPreviewing(false);
+    }
+  }, [ownerAddress]);
 
   return (
     <div className="flex min-h-screen justify-center bg-zinc-50 py-16 font-sans text-zinc-900 dark:bg-black dark:text-zinc-100">
@@ -63,26 +91,68 @@ export default function Home() {
               placeholder="0x..."
               value={ownerInput}
               onChange={(event) => setOwnerInput(event.target.value)}
-              disabled={isDeploying}
+              disabled={isBusy}
               spellCheck={false}
               autoCapitalize="none"
               autoCorrect="off"
             />
           </label>
 
-          <button
-            className="w-full rounded-md bg-zinc-900 px-4 py-2 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:bg-zinc-400 dark:bg-zinc-100 dark:text-zinc-900 dark:disabled:bg-zinc-600"
-            type="submit"
-            disabled={isDeploying}
-          >
-            {isDeploying ? 'Deploying…' : 'Deploy Account'}
-          </button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              className="w-full rounded-md border border-zinc-300 px-4 py-2 text-sm font-semibold transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              type="button"
+              onClick={handlePreview}
+              disabled={isBusy}
+            >
+              {isPreviewing ? 'Preparing…' : 'Preview Transaction'}
+            </button>
+            <button
+              className="w-full rounded-md bg-zinc-900 px-4 py-2 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:bg-zinc-400 dark:bg-zinc-100 dark:text-zinc-900 dark:disabled:bg-zinc-600"
+              type="submit"
+              disabled={isBusy}
+            >
+              {isDeploying ? 'Deploying…' : 'Deploy Account'}
+            </button>
+          </div>
         </form>
 
         {errorMessage ? (
           <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-500/40 dark:bg-red-950/40 dark:text-red-200">
             {errorMessage}
           </div>
+        ) : null}
+
+        {preview ? (
+          <section className="space-y-3 rounded-md border border-zinc-200 bg-zinc-50 p-4 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <h2 className="text-base font-semibold">Transaction Preview</h2>
+            <div className="space-y-2 break-all">
+              <p>
+                <span className="font-medium">To:</span> {preview.to}
+              </p>
+              <p>
+                <span className="font-medium">Data:</span> {preview.data}
+              </p>
+              <div>
+                <p className="font-medium">Call params:</p>
+                <div className="mt-1 rounded bg-zinc-100 p-2 font-mono text-xs text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
+                  <div>
+                    <span className="font-semibold">initData:</span> {preview.callArgs[0]}
+                  </div>
+                  <div className="mt-1">
+                    <span className="font-semibold">salt:</span> {preview.callArgs[1]}
+                  </div>
+                </div>
+              </div>
+              <p>
+                <span className="font-medium">Predicted account:</span> {preview.accountAddress}
+              </p>
+              <p>
+                <span className="font-medium">Already deployed:</span>{' '}
+                {preview.alreadyDeployed ? 'Yes' : 'No'}
+              </p>
+            </div>
+          </section>
         ) : null}
 
         {result ? (
