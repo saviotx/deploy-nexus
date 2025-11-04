@@ -59,7 +59,7 @@ const prepareDeployment = async (
   });
 
   const meeConfig = getMEEVersion(MEEVersion.V2_1_0);
-  const factoryAddress = meeConfig.factoryAddress;
+  const factoryAddress = "0x84b68EaCE123e6a86dBb6F054af7248B2A0537FC";
   const bootstrapAddress = meeConfig.bootStrapAddress;
   const accountIndex = BigInt(0);
   const saltHex = pad(toHex(accountIndex), { size: 32 }) as Hex;
