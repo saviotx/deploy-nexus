@@ -1,5 +1,4 @@
 import {
-  AccountFactoryAbi,
   getMEEVersion,
   MEEVersion,
   NexusBootstrapAbi,
@@ -21,6 +20,8 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 
 import { SOPHON_VIEM_CHAIN } from "./sophonChain";
+import { NexusFactoryPassthroughAbi } from "./abi/nexusFactoryPassthrough";
+import { SnsRegistryAbi } from "./abi/snsRegistry";
 
 type BootstrapConfig = { module: `0x${string}`; data: `0x${string}` };
 type BootstrapPreValidationHook = {
@@ -35,6 +36,15 @@ type DeploymentRequest = {
   value: bigint;
 };
 
+type FactoryCall = {
+  functionName: "createAccountWithName";
+  args: readonly [`0x${string}`, Hex, string];
+};
+
+type DeploymentOptions = {
+  sophonName?: string;
+};
+
 type PreparedDeployment = {
   publicClient: ReturnType<typeof createPublicClient>;
   request: DeploymentRequest;
@@ -42,16 +52,79 @@ type PreparedDeployment = {
   saltHex: Hex;
   predictedAccount: `0x${string}`;
   alreadyDeployed: boolean;
-  callArgs: readonly [`0x${string}`, Hex];
+  factoryCall: FactoryCall;
+  snsName: string | null;
 };
 
 const SERVICE_PRIVATE_KEY =
   "0x0a64c2dbb70fb9059a354312467af1a5a6d4e041b67bcbebc11b1d7492d19142" as const;
 
 const serviceAccount = privateKeyToAccount(SERVICE_PRIVATE_KEY);
+const SOPHON_SNS_REGISTRY =
+  "0xB6207614218417c7D7da669313143051AAe6b365" as const;
+
+const lookupSophonName = async (
+  publicClient: ReturnType<typeof createPublicClient>,
+  accountAddress: `0x${string}`
+): Promise<string | null> => {
+  let suffix = "soph.id";
+  try {
+    const baseDomain = (await publicClient.readContract({
+      address: SOPHON_SNS_REGISTRY,
+      abi: SnsRegistryAbi,
+      functionName: "baseDomain",
+    })) as string;
+    suffix = baseDomain?.replace(/^\./, "") || suffix;
+  } catch {
+    // Ignore suffix lookup failures; default is fine.
+  }
+
+  /* try {
+    const balance = (await publicClient.readContract({
+      address: SOPHON_SNS_REGISTRY,
+      abi: SnsRegistryAbi,
+      functionName: "balanceOf",
+      args: [accountAddress],
+    })) as bigint;
+
+    if (balance === BigInt(0)) {
+      return null;
+    }
+  } catch {
+    return null;
+  } */
+
+  try {
+    console.log("Looking up token ID...");
+    console.log(accountAddress);
+    const tokenId = (await publicClient.readContract({
+      address: SOPHON_SNS_REGISTRY,
+      abi: SnsRegistryAbi,
+      functionName: "tokenOfOwnerByIndex",
+      args: [accountAddress, BigInt(0)],
+    })) as bigint;
+    console.log(tokenId);
+
+    const nameHash = pad(toHex(tokenId), { size: 32 }) as Hex;
+    const label = (await publicClient.readContract({
+      address: SOPHON_SNS_REGISTRY,
+      abi: SnsRegistryAbi,
+      functionName: "name",
+      args: [nameHash],
+    })) as string;
+
+    const sanitizedLabel = label?.replace(/\.$/, "");
+    return sanitizedLabel ? `${sanitizedLabel}.${suffix}` : null;
+  } catch (error) {
+    console.log(error);
+    console.log("Error looking up token ID...");
+    return null;
+  }
+};
 
 const prepareDeployment = async (
-  ownerAddress: `0x${string}`
+  ownerAddress: `0x${string}`,
+  options: DeploymentOptions = {}
 ): Promise<PreparedDeployment> => {
   const publicClient = createPublicClient({
     chain: SOPHON_VIEM_CHAIN,
@@ -59,7 +132,7 @@ const prepareDeployment = async (
   });
 
   const meeConfig = getMEEVersion(MEEVersion.V2_1_0);
-  const factoryAddress = "0x84b68EaCE123e6a86dBb6F054af7248B2A0537FC";
+  const factoryAddress = "0x5457Ce09A36cCd2b976497670979b90dC9465852";
   const bootstrapAddress = meeConfig.bootStrapAddress;
   const accountIndex = BigInt(0);
   const saltHex = pad(toHex(accountIndex), { size: 32 }) as Hex;
@@ -88,7 +161,7 @@ const prepareDeployment = async (
 
   const predictedAccount = (await publicClient.readContract({
     address: factoryAddress,
-    abi: AccountFactoryAbi,
+    abi: NexusFactoryPassthroughAbi,
     functionName: "computeAccountAddress",
     args: [initData, saltHex],
   })) as `0x${string}`;
@@ -99,11 +172,20 @@ const prepareDeployment = async (
 
   const alreadyDeployed = existingCode && existingCode !== "0x";
 
+  const normalizedName = options.sophonName?.trim() ?? "";
+
+  const factoryCall: FactoryCall = {
+    functionName: "createAccountWithName",
+    args: [initData, saltHex, normalizedName] as const,
+  };
+
   const encodedFactoryCall = encodeFunctionData({
-    abi: AccountFactoryAbi,
-    functionName: "createAccount",
-    args: [initData, saltHex],
+    abi: NexusFactoryPassthroughAbi,
+    functionName: factoryCall.functionName,
+    args: factoryCall.args,
   }) as `0x${string}`;
+
+  const snsName = await lookupSophonName(publicClient, predictedAccount);
 
   return {
     publicClient,
@@ -111,7 +193,8 @@ const prepareDeployment = async (
     saltHex,
     predictedAccount,
     alreadyDeployed: alreadyDeployed || false,
-    callArgs: [initData, saltHex] as const,
+    factoryCall,
+    snsName,
     request: {
       to: factoryAddress,
       data: encodedFactoryCall,
@@ -120,18 +203,20 @@ const prepareDeployment = async (
   };
 };
 
-export const deployAccount = async (ownerAddress: `0x${string}`) => {
+export const deployAccount = async (
+  ownerAddress: `0x${string}`,
+  options?: DeploymentOptions
+) => {
   console.log("Deploying account...");
   console.log(`Owner address: ${ownerAddress}`);
 
   const {
     publicClient,
-    initData,
-    saltHex,
     predictedAccount,
     alreadyDeployed,
     request,
-  } = await prepareDeployment(ownerAddress);
+    factoryCall,
+  } = await prepareDeployment(ownerAddress, options);
 
   console.log(`Predicted account: ${predictedAccount}`);
 
@@ -164,9 +249,9 @@ export const deployAccount = async (ownerAddress: `0x${string}`) => {
 
   const txHash = await deployerClient.writeContract({
     address: request.to,
-    abi: AccountFactoryAbi,
-    functionName: "createAccount",
-    args: [initData, saltHex],
+    abi: NexusFactoryPassthroughAbi,
+    functionName: factoryCall.functionName,
+    args: factoryCall.args,
     value: request.value,
   });
 
@@ -179,9 +264,12 @@ export const deployAccount = async (ownerAddress: `0x${string}`) => {
   } as const;
 };
 
-export const getDeploymentTransaction = async (ownerAddress: `0x${string}`) => {
-  const { request, predictedAccount, alreadyDeployed, callArgs } =
-    await prepareDeployment(ownerAddress);
+export const getDeploymentTransaction = async (
+  ownerAddress: `0x${string}`,
+  options?: DeploymentOptions
+) => {
+  const { request, predictedAccount, alreadyDeployed, factoryCall, snsName } =
+    await prepareDeployment(ownerAddress, options);
 
   return {
     accountAddress: predictedAccount,
@@ -189,6 +277,8 @@ export const getDeploymentTransaction = async (ownerAddress: `0x${string}`) => {
     to: request.to,
     data: request.data,
     value: request.value,
-    callArgs,
+    callArgs: factoryCall.args,
+    functionName: factoryCall.functionName,
+    snsName,
   } as const;
 };
