@@ -1,9 +1,16 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import { isAddress } from "viem";
 
 import { deployAccount, getDeploymentTransaction } from "@/lib/deployAccount";
+import { NAME_PATTERN, isSophonNameAvailable } from "@/lib/sns";
 
 type DeployResult = Awaited<ReturnType<typeof deployAccount>>;
 type PreviewResult = Awaited<ReturnType<typeof getDeploymentTransaction>>;
@@ -16,6 +23,10 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [isCheckingName, setIsCheckingName] = useState(false);
+  const [isNameAvailable, setIsNameAvailable] = useState<boolean | null>(null);
+  const nameCheckRequestId = useRef(0);
 
   const ownerAddress = useMemo(
     () => ownerInput.trim() as `0x${string}`,
@@ -23,6 +34,79 @@ export default function Home() {
   );
   const sophonName = useMemo(() => nameInput.trim(), [nameInput]);
   const isBusy = isDeploying || isPreviewing;
+  const shouldBlockNameActions = useMemo(
+    () => nameInput.length > 0 && (isCheckingName || Boolean(nameError)),
+    [isCheckingName, nameError, nameInput]
+  );
+
+  const nameHelper = useMemo(() => {
+    if (!nameInput) {
+      return null;
+    }
+
+    if (nameError) {
+      return { text: nameError, tone: "error" as const };
+    }
+
+    if (isCheckingName) {
+      return { text: "Checking availability…", tone: "muted" as const };
+    }
+
+    if (isNameAvailable) {
+      return { text: "Username is available.", tone: "success" as const };
+    }
+
+    return null;
+  }, [isCheckingName, isNameAvailable, nameError, nameInput]);
+
+  const handleNameInputChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const inputValue = event.target.value.toLowerCase();
+      setNameInput(inputValue);
+      setIsNameAvailable(null);
+
+      const requestId = nameCheckRequestId.current + 1;
+      nameCheckRequestId.current = requestId;
+
+      if (!inputValue) {
+        setNameError(null);
+        setIsCheckingName(false);
+        return;
+      }
+
+      if (!NAME_PATTERN.test(inputValue)) {
+        setNameError("Use 1-28 lowercase letters or numbers (a-z, 0-9).");
+        setIsCheckingName(false);
+        return;
+      }
+
+      setNameError(null);
+      setIsCheckingName(true);
+
+      try {
+        const available = await isSophonNameAvailable(inputValue);
+        if (nameCheckRequestId.current !== requestId) {
+          return;
+        }
+
+        setIsNameAvailable(available);
+        setNameError(available ? null : "Username already taken");
+      } catch (error) {
+        console.error(error);
+        if (nameCheckRequestId.current !== requestId) {
+          return;
+        }
+
+        setNameError("Error checking username availability");
+        setIsNameAvailable(null);
+      } finally {
+        if (nameCheckRequestId.current === requestId) {
+          setIsCheckingName(false);
+        }
+      }
+    },
+    []
+  );
 
   const handleSubmit = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
@@ -34,6 +118,14 @@ export default function Home() {
 
       if (!ownerAddress || !isAddress(ownerAddress)) {
         setErrorMessage("Enter a valid 0x-prefixed owner address.");
+        return;
+      }
+
+      if (shouldBlockNameActions) {
+        setErrorMessage(
+          nameError ??
+            "Wait for the username check to finish before continuing."
+        );
         return;
       }
 
@@ -54,7 +146,7 @@ export default function Home() {
         setIsDeploying(false);
       }
     },
-    [ownerAddress, sophonName]
+    [nameError, ownerAddress, shouldBlockNameActions, sophonName]
   );
 
   const handlePreview = useCallback(async () => {
@@ -64,6 +156,13 @@ export default function Home() {
 
     if (!ownerAddress || !isAddress(ownerAddress)) {
       setErrorMessage("Enter a valid 0x-prefixed owner address.");
+      return;
+    }
+
+    if (shouldBlockNameActions) {
+      setErrorMessage(
+        nameError ?? "Wait for the username check to finish before continuing."
+      );
       return;
     }
 
@@ -83,7 +182,7 @@ export default function Home() {
     } finally {
       setIsPreviewing(false);
     }
-  }, [ownerAddress, sophonName]);
+  }, [nameError, ownerAddress, shouldBlockNameActions, sophonName]);
 
   return (
     <div className="flex min-h-screen justify-center bg-zinc-50 py-16 font-sans text-zinc-900 dark:bg-black dark:text-zinc-100">
@@ -122,7 +221,7 @@ export default function Home() {
               name="sophonName"
               placeholder="username"
               value={nameInput}
-              onChange={(event) => setNameInput(event.target.value)}
+              onChange={handleNameInputChange}
               disabled={isBusy}
               spellCheck={false}
               autoCapitalize="none"
@@ -132,6 +231,19 @@ export default function Home() {
               When provided, the deployment uses `createAccountWithName` to
               register the Sophon Name Service entry during account creation.
             </span>
+            {nameHelper ? (
+              <span
+                className={`text-xs font-normal ${
+                  nameHelper.tone === "error"
+                    ? "text-red-500 dark:text-red-400"
+                    : nameHelper.tone === "success"
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-zinc-500 dark:text-zinc-400"
+                }`}
+              >
+                {nameHelper.text}
+              </span>
+            ) : null}
           </label>
 
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -139,14 +251,14 @@ export default function Home() {
               className="w-full rounded-md border border-zinc-300 px-4 py-2 text-sm font-semibold transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:hover:bg-zinc-800"
               type="button"
               onClick={handlePreview}
-              disabled={isBusy}
+              disabled={isBusy || shouldBlockNameActions}
             >
               {isPreviewing ? "Preparing…" : "Preview Transaction"}
             </button>
             <button
               className="w-full rounded-md bg-zinc-900 px-4 py-2 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:bg-zinc-400 dark:bg-zinc-100 dark:text-zinc-900 dark:disabled:bg-zinc-600"
               type="submit"
-              disabled={isBusy}
+              disabled={isBusy || shouldBlockNameActions}
             >
               {isDeploying ? "Deploying…" : "Deploy Account"}
             </button>

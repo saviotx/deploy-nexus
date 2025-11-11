@@ -20,6 +20,25 @@ export const SnsRegistryAbi = [
   },
   {
     type: "function",
+    name: "ownerOf",
+    inputs: [
+      {
+        name: "tokenId",
+        type: "uint256",
+        internalType: "uint256",
+      },
+    ],
+    outputs: [
+      {
+        name: "",
+        type: "address",
+        internalType: "address",
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
     name: "tokenOfOwnerByIndex",
     inputs: [
       {

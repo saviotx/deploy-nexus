@@ -22,6 +22,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { SOPHON_VIEM_CHAIN } from "./sophonChain";
 import { NexusFactoryPassthroughAbi } from "./abi/nexusFactoryPassthrough";
 import { SnsRegistryAbi } from "./abi/snsRegistry";
+import { SOPHON_SNS_REGISTRY } from "./sns";
 
 type BootstrapConfig = { module: `0x${string}`; data: `0x${string}` };
 type BootstrapPreValidationHook = {
@@ -60,8 +61,6 @@ const SERVICE_PRIVATE_KEY =
   "0x0a64c2dbb70fb9059a354312467af1a5a6d4e041b67bcbebc11b1d7492d19142" as const;
 
 const serviceAccount = privateKeyToAccount(SERVICE_PRIVATE_KEY);
-const SOPHON_SNS_REGISTRY =
-  "0xB6207614218417c7D7da669313143051AAe6b365" as const;
 
 const lookupSophonName = async (
   publicClient: ReturnType<typeof createPublicClient>,
